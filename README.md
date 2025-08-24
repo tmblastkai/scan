@@ -30,10 +30,16 @@ go run main.go --file input.csv --output output.csv \
 若 `has_login_keyword` 或 `is_matched` 為 `true`，則 `pass_test` 會為 `true`。
 
 ## 建置
-需安裝 Go 1.21 以上版本與 Chrome/Chromium。
 
+### 環境安裝
+以 Debian/Ubuntu 為例，先安裝 Go 1.21+ 與 Chrome/Chromium：
+```bash
+sudo apt update
+sudo apt install -y golang-go chromium-browser
+```
+
+### 建置流程
 ```bash
 go mod tidy
 go build
 ```
-
