@@ -200,18 +200,16 @@ func process(rec InputRecord, timeout time.Duration) Result {
 	ctx, cancelCtx := chromedp.NewContext(allocCtx)
 	defer cancelCtx()
 
-	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
-	defer cancelTimeout()
-
 	quiet := 500 * time.Millisecond
 	var (
 		mu        sync.Mutex
-		active    int
+		requests  = make(map[network.RequestID]time.Time)
 		html      string
 		title     string
 		finalURL  string
 		idleTimer = time.NewTimer(time.Hour)
-		done      = make(chan struct{})
+		idleCh    = make(chan struct{}, 1)
+		stopCh    = make(chan struct{})
 	)
 	idleTimer.Stop()
 	var responseCode int64
@@ -220,20 +218,27 @@ func process(rec InputRecord, timeout time.Duration) Result {
 		switch ev := ev.(type) {
 		case *network.EventRequestWillBeSent:
 			mu.Lock()
-			active++
+			requests[ev.RequestID] = time.Now()
 			idleTimer.Stop()
 			log.Printf("%s:%s request %s", rec.Host, rec.Port, ev.Request.URL)
 			mu.Unlock()
-		case *network.EventLoadingFinished, *network.EventLoadingFailed:
+		case *network.EventLoadingFinished:
 			mu.Lock()
-			if active > 0 {
-				active--
-			}
-			if active == 0 {
+			delete(requests, ev.RequestID)
+			if len(requests) == 0 {
 				idleTimer.Reset(quiet)
 				log.Printf("%s:%s network idle timer started", rec.Host, rec.Port)
 			}
-			log.Printf("%s:%s request finished (active=%d)", rec.Host, rec.Port, active)
+			log.Printf("%s:%s request finished id=%s (active=%d)", rec.Host, rec.Port, ev.RequestID, len(requests))
+			mu.Unlock()
+		case *network.EventLoadingFailed:
+			mu.Lock()
+			delete(requests, ev.RequestID)
+			if len(requests) == 0 {
+				idleTimer.Reset(quiet)
+				log.Printf("%s:%s network idle timer started", rec.Host, rec.Port)
+			}
+			log.Printf("%s:%s request failed id=%s (active=%d)", rec.Host, rec.Port, ev.RequestID, len(requests))
 			mu.Unlock()
 		case *network.EventResponseReceived:
 			if ev.Type == network.ResourceTypeDocument && responseCode == 0 {
@@ -245,23 +250,55 @@ func process(rec InputRecord, timeout time.Duration) Result {
 
 	go func() {
 		<-idleTimer.C
-		close(done)
+		idleCh <- struct{}{}
 	}()
 
+	ticker := time.NewTicker(100 * time.Millisecond)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				mu.Lock()
+				now := time.Now()
+				for id, start := range requests {
+					if now.Sub(start) > quiet {
+						log.Printf("%s:%s pruning lingering request %s", rec.Host, rec.Port, id)
+						delete(requests, id)
+					}
+				}
+				if len(requests) == 0 {
+					idleTimer.Reset(quiet)
+				}
+				mu.Unlock()
+			case <-stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	timeoutTimer := time.NewTimer(timeout)
 	if err := chromedp.Run(ctx, network.Enable(), chromedp.Navigate(url)); err != nil {
 		res.Error = err.Error()
 		log.Printf("navigate error %s:%s: %v", rec.Host, rec.Port, err)
+		close(stopCh)
 		return res
 	}
 
 	select {
-	case <-done:
+	case <-idleCh:
 		log.Printf("%s:%s network idle", rec.Host, rec.Port)
-	case <-ctx.Done():
-		res.Error = ctx.Err().Error()
-		log.Printf("%s:%s context timeout: %v", rec.Host, rec.Port, ctx.Err())
-		return res
+	case <-timeoutTimer.C:
+		mu.Lock()
+		lingering := make([]string, 0, len(requests))
+		for id := range requests {
+			lingering = append(lingering, string(id))
+		}
+		mu.Unlock()
+		log.Printf("%s:%s context timeout: lingering requests %v", rec.Host, rec.Port, lingering)
 	}
+	timeoutTimer.Stop()
+	close(stopCh)
 
 	if err := chromedp.Run(ctx,
 		chromedp.OuterHTML("html", &html),
