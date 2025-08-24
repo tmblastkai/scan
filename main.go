@@ -59,9 +59,14 @@ func main() {
 	}
 
 	outCh := make(chan Result)
-	var wg sync.WaitGroup
+	var (
+		wg       sync.WaitGroup
+		writerWg sync.WaitGroup
+	)
 
+	writerWg.Add(1)
 	go func() {
+		defer writerWg.Done()
 		writeResults(*outputPath, outCh)
 	}()
 
@@ -81,6 +86,7 @@ func main() {
 
 	wg.Wait()
 	close(outCh)
+	writerWg.Wait()
 	log.Printf("all tasks completed")
 }
 
