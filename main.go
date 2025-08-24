@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -38,18 +39,20 @@ var allowList = []string{
 }
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	inputPath := flag.String("file", "input.csv", "input CSV file containing host and port columns")
 	outputPath := flag.String("output", "output.csv", "output CSV file path")
 	concurrency := flag.Int("concurrency", 16, "maximum concurrent chromedp tabs")
 	timeoutSec := flag.Int("timeout", 5, "chromedp timeout in seconds")
 	flag.Parse()
 
+	log.Printf("flags: file=%s output=%s concurrency=%d timeout=%d", *inputPath, *outputPath, *concurrency, *timeoutSec)
 	inputRecords, err := readInput(*inputPath, *outputPath)
 	if err != nil {
-		fmt.Println("read input error:", err)
+		log.Printf("read input error: %v", err)
 		return
 	}
-	fmt.Println("input_records:", len(inputRecords))
+	log.Printf("input_records: %d", len(inputRecords))
 
 	outCh := make(chan Result)
 	var wg sync.WaitGroup
@@ -65,17 +68,21 @@ func main() {
 		go func(r InputRecord) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			log.Printf("start processing %s:%s", r.Host, r.Port)
 			res := process(r, time.Duration(*timeoutSec)*time.Second)
 			outCh <- res
+			log.Printf("finish processing %s:%s", r.Host, r.Port)
 		}(rec)
 	}
 
 	wg.Wait()
 	close(outCh)
+	log.Printf("all tasks completed")
 }
 
 // readInput reads the input CSV and filters out records already present in the output CSV.
 func readInput(inputFile, outputFile string) ([]InputRecord, error) {
+	log.Printf("reading input file %s", inputFile)
 	f, err := os.Open(inputFile)
 	if err != nil {
 		return nil, err
@@ -90,6 +97,7 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 
 	processed := make(map[string]struct{})
 	if of, err := os.Open(outputFile); err == nil {
+		log.Printf("checking existing results in %s", outputFile)
 		defer of.Close()
 		or := csv.NewReader(of)
 		outRows, err := or.ReadAll()
@@ -101,6 +109,9 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 				key := row[0] + ":" + row[1]
 				processed[key] = struct{}{}
 			}
+			log.Printf("found %d processed records", len(processed))
+		} else {
+			log.Printf("read output error: %v", err)
 		}
 	}
 
@@ -120,19 +131,23 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 
 // writeResults appends results to the output CSV file.
 func writeResults(outputFile string, ch <-chan Result) {
+	log.Printf("writing results to %s", outputFile)
 	_, err := os.Stat(outputFile)
 	newFile := os.IsNotExist(err)
 
 	f, err := os.OpenFile(outputFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		fmt.Println("open output error:", err)
+		log.Printf("open output error: %v", err)
 		return
 	}
 	defer f.Close()
 
 	w := csv.NewWriter(f)
 	if newFile {
-		w.Write([]string{"host", "port", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error"})
+		log.Printf("creating new output file with header")
+		if err := w.Write([]string{"host", "port", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error"}); err != nil {
+			log.Printf("write header error: %v", err)
+		}
 		w.Flush()
 	}
 
@@ -147,15 +162,24 @@ func writeResults(outputFile string, ch <-chan Result) {
 			fmt.Sprintf("%t", r.PassTest),
 			r.Error,
 		}
-		w.Write(row)
+		if err := w.Write(row); err != nil {
+			log.Printf("write row error for %s:%s: %v", r.Host, r.Port, err)
+		}
 		w.Flush()
+		if err := w.Error(); err != nil {
+			log.Printf("flush error: %v", err)
+		} else {
+			log.Printf("wrote result for %s:%s", r.Host, r.Port)
+		}
 	}
+	log.Printf("finished writing results")
 }
 
 // process launches a headless browser to fetch information for a single host and port.
 func process(rec InputRecord, timeout time.Duration) Result {
 	res := Result{Host: rec.Host, Port: rec.Port}
 	url := fmt.Sprintf("http://%s:%s", rec.Host, rec.Port)
+	log.Printf("navigate to %s", url)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -215,13 +239,16 @@ func process(rec InputRecord, timeout time.Duration) Result {
 
 	if err := chromedp.Run(ctx, network.Enable(), chromedp.Navigate(url)); err != nil {
 		res.Error = err.Error()
+		log.Printf("navigate error %s:%s: %v", rec.Host, rec.Port, err)
 		return res
 	}
 
 	select {
 	case <-done:
+		log.Printf("%s:%s network idle", rec.Host, rec.Port)
 	case <-ctx.Done():
 		res.Error = ctx.Err().Error()
+		log.Printf("%s:%s context timeout: %v", rec.Host, rec.Port, ctx.Err())
 		return res
 	}
 
@@ -231,6 +258,7 @@ func process(rec InputRecord, timeout time.Duration) Result {
 		chromedp.Location(&finalURL),
 	); err != nil {
 		res.Error = err.Error()
+		log.Printf("%s:%s capture error: %v", rec.Host, rec.Port, err)
 		return res
 	}
 
@@ -244,5 +272,6 @@ func process(rec InputRecord, timeout time.Duration) Result {
 		}
 	}
 	res.PassTest = res.HasLoginKeyword || res.IsMatched
+	log.Printf("%s:%s result code=%d matched=%t login=%t pass=%t", rec.Host, rec.Port, res.ResponseCode, res.IsMatched, res.HasLoginKeyword, res.PassTest)
 	return res
 }
