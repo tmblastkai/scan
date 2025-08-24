@@ -53,6 +53,10 @@ func main() {
 		return
 	}
 	log.Printf("input_records: %d", len(inputRecords))
+	if len(inputRecords) == 0 {
+		log.Printf("no input records to process, exiting")
+		return
+	}
 
 	outCh := make(chan Result)
 	var wg sync.WaitGroup
@@ -126,6 +130,7 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 		}
 		result = append(result, InputRecord{Host: row[0], Port: row[1]})
 	}
+	log.Printf("parsed %d new records", len(result))
 	return result, nil
 }
 
@@ -151,6 +156,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 		w.Flush()
 	}
 
+	count := 0
 	for r := range ch {
 		row := []string{
 			r.Host,
@@ -171,8 +177,9 @@ func writeResults(outputFile string, ch <-chan Result) {
 		} else {
 			log.Printf("wrote result for %s:%s", r.Host, r.Port)
 		}
+		count++
 	}
-	log.Printf("finished writing results")
+	log.Printf("finished writing %d results", count)
 }
 
 // process launches a headless browser to fetch information for a single host and port.
@@ -215,6 +222,7 @@ func process(rec InputRecord, timeout time.Duration) Result {
 			mu.Lock()
 			active++
 			idleTimer.Stop()
+			log.Printf("%s:%s request %s", rec.Host, rec.Port, ev.Request.URL)
 			mu.Unlock()
 		case *network.EventLoadingFinished, *network.EventLoadingFailed:
 			mu.Lock()
@@ -223,11 +231,14 @@ func process(rec InputRecord, timeout time.Duration) Result {
 			}
 			if active == 0 {
 				idleTimer.Reset(quiet)
+				log.Printf("%s:%s network idle timer started", rec.Host, rec.Port)
 			}
+			log.Printf("%s:%s request finished (active=%d)", rec.Host, rec.Port, active)
 			mu.Unlock()
 		case *network.EventResponseReceived:
 			if ev.Type == network.ResourceTypeDocument && responseCode == 0 {
 				responseCode = int64(ev.Response.Status)
+				log.Printf("%s:%s response %d for %s", rec.Host, rec.Port, responseCode, ev.Response.URL)
 			}
 		}
 	})
@@ -272,6 +283,7 @@ func process(rec InputRecord, timeout time.Duration) Result {
 		}
 	}
 	res.PassTest = res.HasLoginKeyword || res.IsMatched
+	log.Printf("%s:%s finalURL=%s title=%q html=%dB", rec.Host, rec.Port, finalURL, title, len(html))
 	log.Printf("%s:%s result code=%d matched=%t login=%t pass=%t", rec.Host, rec.Port, res.ResponseCode, res.IsMatched, res.HasLoginKeyword, res.PassTest)
 	return res
 }
