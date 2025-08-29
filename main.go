@@ -15,16 +15,18 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// InputRecord represents a host and port combination.
+// InputRecord represents a host, port, and protocol combination.
 type InputRecord struct {
-	Host string
-	Port string
+	Host     string
+	Port     string
+	Protocol string
 }
 
-// Result holds the scan outcome for a single host and port.
+// Result holds the scan outcome for a single host, port, and protocol.
 type Result struct {
 	Host            string
 	Port            string
+	Protocol        string
 	ResponseCode    int64
 	HTMLHeader      string
 	HasLoginKeyword bool
@@ -77,10 +79,10 @@ func main() {
 		go func(r InputRecord) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			log.Printf("start processing %s:%s", r.Host, r.Port)
+			log.Printf("start processing %s:%s (%s)", r.Host, r.Port, r.Protocol)
 			res := process(r, time.Duration(*timeoutSec)*time.Second)
 			outCh <- res
-			log.Printf("finish processing %s:%s", r.Host, r.Port)
+			log.Printf("finish processing %s:%s (%s)", r.Host, r.Port, r.Protocol)
 		}(rec)
 	}
 
@@ -113,10 +115,10 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 		outRows, err := or.ReadAll()
 		if err == nil {
 			for i, row := range outRows {
-				if i == 0 || len(row) < 2 {
+				if i == 0 || len(row) < 3 {
 					continue
 				}
-				key := row[0] + ":" + row[1]
+				key := row[0] + ":" + row[1] + ":" + row[2]
 				processed[key] = struct{}{}
 			}
 			log.Printf("found %d processed records", len(processed))
@@ -130,11 +132,23 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 		if i == 0 || len(row) < 2 {
 			continue
 		}
-		key := row[0] + ":" + row[1]
-		if _, ok := processed[key]; ok {
-			continue
+		host, port := row[0], row[1]
+		var protos []string
+		switch port {
+		case "80":
+			protos = []string{"http"}
+		case "443":
+			protos = []string{"https"}
+		default:
+			protos = []string{"http", "https"}
 		}
-		result = append(result, InputRecord{Host: row[0], Port: row[1]})
+		for _, proto := range protos {
+			key := host + ":" + port + ":" + proto
+			if _, ok := processed[key]; ok {
+				continue
+			}
+			result = append(result, InputRecord{Host: host, Port: port, Protocol: proto})
+		}
 	}
 	log.Printf("parsed %d new records", len(result))
 	return result, nil
@@ -156,7 +170,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 	w := csv.NewWriter(f)
 	if newFile {
 		log.Printf("creating new output file with header")
-		if err := w.Write([]string{"host", "port", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error"}); err != nil {
+		if err := w.Write([]string{"host", "port", "protocol", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error"}); err != nil {
 			log.Printf("write header error: %v", err)
 		}
 		w.Flush()
@@ -167,6 +181,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 		row := []string{
 			r.Host,
 			r.Port,
+			r.Protocol,
 			fmt.Sprintf("%d", r.ResponseCode),
 			r.HTMLHeader,
 			fmt.Sprintf("%t", r.HasLoginKeyword),
@@ -181,7 +196,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 		if err := w.Error(); err != nil {
 			log.Printf("flush error: %v", err)
 		} else {
-			log.Printf("wrote result for %s:%s", r.Host, r.Port)
+			log.Printf("wrote result for %s:%s (%s)", r.Host, r.Port, r.Protocol)
 		}
 		count++
 	}
@@ -190,8 +205,8 @@ func writeResults(outputFile string, ch <-chan Result) {
 
 // process launches a headless browser to fetch information for a single host and port.
 func process(rec InputRecord, timeout time.Duration) Result {
-	res := Result{Host: rec.Host, Port: rec.Port}
-	url := fmt.Sprintf("http://%s:%s", rec.Host, rec.Port)
+	res := Result{Host: rec.Host, Port: rec.Port, Protocol: rec.Protocol}
+	url := fmt.Sprintf("%s://%s:%s", rec.Protocol, rec.Host, rec.Port)
 	log.Printf("navigate to %s", url)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],

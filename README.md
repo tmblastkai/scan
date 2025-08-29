@@ -23,11 +23,12 @@ go run main.go --file input.csv --output output.csv \
 
 ### Input 格式
 輸入檔需為 CSV 且包含 `host`、`port` 欄位。
+當 `port` 為 `80` 時僅以 `http` 測試；`443` 則僅以 `https` 測試；其他埠號會分別以 `http`、`https` 各測一次。
 
 ### Output 欄位
-`host,port,response_code,html_header,has_login_keyword,is_matched,pass_test,error`
+`host,port,protocol,response_code,html_header,has_login_keyword,is_matched,pass_test,error`
 
-若 `has_login_keyword` 或 `is_matched` 為 `true`，則 `pass_test` 會為 `true`。
+`protocol` 會顯示實際使用的 `http` 或 `https`。若 `has_login_keyword` 或 `is_matched` 為 `true`，則 `pass_test` 會為 `true`。
 
 ## 建置
 
