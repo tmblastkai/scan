@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/security"
 	"github.com/chromedp/chromedp"
 )
 
@@ -342,7 +343,12 @@ func process(rec InputRecord, timeout time.Duration) Result {
 	}()
 
 	timeoutTimer := time.NewTimer(timeout)
-	if err := chromedp.Run(ctx, network.Enable(), network.SetIgnoreCertificateErrors(true), chromedp.Navigate(url)); err != nil {
+	if err := chromedp.Run(ctx,
+		network.Enable(),
+		security.Enable(),
+		security.SetIgnoreCertificateErrors(true),
+		chromedp.Navigate(url),
+	); err != nil {
 		res.Error = err.Error()
 		log.Printf("navigate error %s:%s: %v", rec.Host, rec.Port, err)
 		close(stopCh)
