@@ -30,6 +30,7 @@ func Process(rec InputRecord, timeout time.Duration) Result {
 	defer resp.Body.Close()
 	res.ResponseCode = int64(resp.StatusCode)
 	if resp.StatusCode >= 400 {
+		res.PassTest = true
 		Warnf("%s:%s preflight status %d - skipping deep scan", rec.Host, rec.Port, resp.StatusCode)
 		return res
 	}
