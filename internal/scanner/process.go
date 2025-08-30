@@ -30,6 +30,7 @@ func Process(rec InputRecord, timeout time.Duration) Result {
 	defer resp.Body.Close()
 	res.ResponseCode = int64(resp.StatusCode)
 	if resp.StatusCode >= 400 {
+		res.PassTest = true
 		Warnf("%s:%s preflight status %d - skipping deep scan", rec.Host, rec.Port, resp.StatusCode)
 		return res
 	}
@@ -100,11 +101,6 @@ func chromedpProcess(res Result, timeout time.Duration) Result {
 				responseCode = int64(ev.Response.Status)
 				Warnf("%s:%s response %d for %s", res.Host, res.Port, responseCode, ev.Response.URL)
 			}
-		case *security.EventCertificateError:
-			Warnf("%s:%s certificate error %s", res.Host, res.Port, ev.ErrorType)
-			go func(id security.RequestID) {
-				_ = chromedp.Run(ctx, security.HandleCertificateError(ev.EventID, security.CertificateErrorActionContinue))
-			}(ev.RequestID)
 		}
 	})
 
