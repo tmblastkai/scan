@@ -22,11 +22,12 @@ go run main.go --file input.csv --output output.csv \
 - `--timeout`：單個頁面最大等待秒數，預設 `5`
 
 ### Input 格式
-輸入檔需為 CSV 且包含 `host`、`port` 欄位。
+輸入檔需為 CSV 且包含 `host`、`port` 欄位，其他欄位會原樣保留於輸出中。
 當 `port` 為 `80` 時僅以 `http` 測試；`443` 則僅以 `https` 測試；其他埠號會分別以 `http`、`https` 各測一次。
 
 ### Output 欄位
-`host,port,protocol,response_code,html_header,has_login_keyword,is_matched,pass_test,error`
+輸出欄位為原始輸入欄位加上：
+`protocol,response_code,html_header,has_login_keyword,is_matched,pass_test,error`
 
 `protocol` 會顯示實際使用的 `http` 或 `https`。若 `has_login_keyword` 或 `is_matched` 為 `true`，則 `pass_test` 會為 `true`。
 

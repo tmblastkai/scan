@@ -20,10 +20,12 @@ type InputRecord struct {
 	Host     string
 	Port     string
 	Protocol string
+	Raw      []string
 }
 
 // Result holds the scan outcome for a single host, port, and protocol.
 type Result struct {
+	Raw             []string
 	Host            string
 	Port            string
 	Protocol        string
@@ -49,7 +51,7 @@ func main() {
 	flag.Parse()
 
 	log.Printf("flags: file=%s output=%s concurrency=%d timeout=%d", *inputPath, *outputPath, *concurrency, *timeoutSec)
-	inputRecords, err := readInput(*inputPath, *outputPath)
+	inputRecords, header, err := readInput(*inputPath, *outputPath)
 	if err != nil {
 		log.Printf("read input error: %v", err)
 		return
@@ -69,7 +71,7 @@ func main() {
 	writerWg.Add(1)
 	go func() {
 		defer writerWg.Done()
-		writeResults(*outputPath, outCh)
+		writeResults(*outputPath, header, outCh)
 	}()
 
 	sem := make(chan struct{}, *concurrency)
@@ -93,18 +95,35 @@ func main() {
 }
 
 // readInput reads the input CSV and filters out records already present in the output CSV.
-func readInput(inputFile, outputFile string) ([]InputRecord, error) {
+func readInput(inputFile, outputFile string) ([]InputRecord, []string, error) {
 	log.Printf("reading input file %s", inputFile)
 	f, err := os.Open(inputFile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
 	r := csv.NewReader(f)
 	rows, err := r.ReadAll()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil, fmt.Errorf("input file is empty")
+	}
+
+	header := rows[0]
+	hostIdx, portIdx := -1, -1
+	for i, h := range header {
+		switch strings.ToLower(h) {
+		case "host":
+			hostIdx = i
+		case "port":
+			portIdx = i
+		}
+	}
+	if hostIdx < 0 || portIdx < 0 {
+		return nil, nil, fmt.Errorf("host or port column not found")
 	}
 
 	processed := make(map[string]struct{})
@@ -113,26 +132,47 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 		defer of.Close()
 		or := csv.NewReader(of)
 		outRows, err := or.ReadAll()
-		if err == nil {
+		if err == nil && len(outRows) > 0 {
+			outHeader := outRows[0]
+			hIdx, pIdx, protoIdx := -1, -1, -1
+			for i, h := range outHeader {
+				switch strings.ToLower(h) {
+				case "host":
+					hIdx = i
+				case "port":
+					pIdx = i
+				case "protocol":
+					protoIdx = i
+				}
+			}
 			for i, row := range outRows {
-				if i == 0 || len(row) < 3 {
+				if i == 0 {
 					continue
 				}
-				key := row[0] + ":" + row[1] + ":" + row[2]
+				if hIdx < 0 || pIdx < 0 || protoIdx < 0 {
+					continue
+				}
+				if len(row) <= protoIdx {
+					continue
+				}
+				key := row[hIdx] + ":" + row[pIdx] + ":" + row[protoIdx]
 				processed[key] = struct{}{}
 			}
 			log.Printf("found %d processed records", len(processed))
-		} else {
+		} else if err != nil {
 			log.Printf("read output error: %v", err)
 		}
 	}
 
 	var result []InputRecord
 	for i, row := range rows {
-		if i == 0 || len(row) < 2 {
+		if i == 0 {
 			continue
 		}
-		host, port := row[0], row[1]
+		if len(row) <= portIdx || len(row) <= hostIdx {
+			continue
+		}
+		host, port := row[hostIdx], row[portIdx]
 		var protos []string
 		switch port {
 		case "80":
@@ -147,15 +187,17 @@ func readInput(inputFile, outputFile string) ([]InputRecord, error) {
 			if _, ok := processed[key]; ok {
 				continue
 			}
-			result = append(result, InputRecord{Host: host, Port: port, Protocol: proto})
+			raw := make([]string, len(row))
+			copy(raw, row)
+			result = append(result, InputRecord{Host: host, Port: port, Protocol: proto, Raw: raw})
 		}
 	}
 	log.Printf("parsed %d new records", len(result))
-	return result, nil
+	return result, header, nil
 }
 
 // writeResults appends results to the output CSV file.
-func writeResults(outputFile string, ch <-chan Result) {
+func writeResults(outputFile string, header []string, ch <-chan Result) {
 	log.Printf("writing results to %s", outputFile)
 	_, err := os.Stat(outputFile)
 	newFile := os.IsNotExist(err)
@@ -170,7 +212,9 @@ func writeResults(outputFile string, ch <-chan Result) {
 	w := csv.NewWriter(f)
 	if newFile {
 		log.Printf("creating new output file with header")
-		if err := w.Write([]string{"host", "port", "protocol", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error"}); err != nil {
+		hdr := append(append([]string{}, header...),
+			"protocol", "response_code", "html_header", "has_login_keyword", "is_matched", "pass_test", "error")
+		if err := w.Write(hdr); err != nil {
 			log.Printf("write header error: %v", err)
 		}
 		w.Flush()
@@ -178,9 +222,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 
 	count := 0
 	for r := range ch {
-		row := []string{
-			r.Host,
-			r.Port,
+		row := append(append([]string{}, r.Raw...),
 			r.Protocol,
 			fmt.Sprintf("%d", r.ResponseCode),
 			r.HTMLHeader,
@@ -188,7 +230,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 			fmt.Sprintf("%t", r.IsMatched),
 			fmt.Sprintf("%t", r.PassTest),
 			r.Error,
-		}
+		)
 		if err := w.Write(row); err != nil {
 			log.Printf("write row error for %s:%s: %v", r.Host, r.Port, err)
 		}
@@ -205,7 +247,7 @@ func writeResults(outputFile string, ch <-chan Result) {
 
 // process launches a headless browser to fetch information for a single host and port.
 func process(rec InputRecord, timeout time.Duration) Result {
-	res := Result{Host: rec.Host, Port: rec.Port, Protocol: rec.Protocol}
+	res := Result{Raw: rec.Raw, Host: rec.Host, Port: rec.Port, Protocol: rec.Protocol}
 	url := fmt.Sprintf("%s://%s:%s", rec.Protocol, rec.Host, rec.Port)
 	log.Printf("navigate to %s", url)
 

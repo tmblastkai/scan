@@ -30,7 +30,7 @@ func TestProcessNetworkIdlePrunesLongRequests(t *testing.T) {
 
 	hostPort := strings.TrimPrefix(srv.URL, "http://")
 	parts := strings.Split(hostPort, ":")
-	rec := InputRecord{Host: parts[0], Port: parts[1], Protocol: "http"}
+	rec := InputRecord{Host: parts[0], Port: parts[1], Protocol: "http", Raw: []string{parts[0], parts[1]}}
 
 	res := process(rec, 3*time.Second)
 	if res.Error != "" {
