@@ -254,6 +254,7 @@ func process(rec InputRecord, timeout time.Duration) Result {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ignore-certificate-errors", true),
 		chromedp.NoSandbox,
 	)
 
@@ -341,7 +342,7 @@ func process(rec InputRecord, timeout time.Duration) Result {
 	}()
 
 	timeoutTimer := time.NewTimer(timeout)
-	if err := chromedp.Run(ctx, network.Enable(), chromedp.Navigate(url)); err != nil {
+	if err := chromedp.Run(ctx, network.Enable(), network.SetIgnoreCertificateErrors(true), chromedp.Navigate(url)); err != nil {
 		res.Error = err.Error()
 		log.Printf("navigate error %s:%s: %v", rec.Host, rec.Port, err)
 		close(stopCh)
